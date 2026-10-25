@@ -1,0 +1,37 @@
+# the player's own files, and what the build makes from them
+# symlinks to the player's copy and the recompiled code: no trailing slash, which would match only directories
+/assets
+/generated
+iso/
+*.iso
+*.xbe
+
+# dependencies Gradle and CMake fetch
+third_party/
+
+# build
+out/
+.build/
+build/
+app/build/
+.cxx/
+.gradle/
+.kotlin/
+*.apk
+*.aab
+*.log
+
+# machine and signing
+local.properties
+*.jks
+*.keystore
+
+# runtime files, from a desktop run of the same code
+settings.toml
+/hdd/
+/logs/
+
+# editors
+.idea/
+.vscode/
+*.iml
