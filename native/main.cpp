@@ -48,6 +48,10 @@ std::atomic<uint32_t> g_surface_epoch{0};
 std::atomic<uint32_t> g_pixel_w{1280};
 std::atomic<uint32_t> g_pixel_h{720};
 std::atomic<float> g_density{1};
+// the screen the render scale is taken from: the last landscape size the window had. Coming back from the background
+// Android may show the window portrait or 1 pixel for a moment, and a render scale from that remade every target
+std::atomic<uint32_t> g_out_w{1280};
+std::atomic<uint32_t> g_out_h{720};
 
 std::mutex g_open_lock;
 std::condition_variable g_open_cv;
@@ -71,6 +75,10 @@ void UpdateSizes() {
     SDL_GetWindowSizeInPixels(g_window, &w, &h);
     g_pixel_w = uint32_t(std::max(w, 1));
     g_pixel_h = uint32_t(std::max(h, 1));
+    if (g_foreground && w > 1 && h > 1 && w >= h) {
+        g_out_w = uint32_t(w);
+        g_out_h = uint32_t(h);
+    }
     float density = SDL_GetWindowPixelDensity(g_window);
     g_density = density > 0 ? density : 1.0f;
 }
@@ -135,6 +143,27 @@ void FeedImGui(const SDL_Event& e) {
     }
 }
 
+// Android's pause and resume, seen as SDL queues them: SDL blocks this thread inside the pump right after queueing
+// the pause, so the queue hands it over only after the resume, and the game thread went on drawing into a window
+// Android had taken away. A watch runs at the queueing, before the block.
+bool Lifecycle(void*, SDL_Event* e) {
+    switch (e->type) {
+        case SDL_EVENT_WILL_ENTER_BACKGROUND:
+            if (!g_foreground) break;
+            g_foreground = false;
+            break;
+        case SDL_EVENT_DID_ENTER_FOREGROUND:
+            if (g_foreground) break;
+            g_surface_epoch++;
+            g_foreground = true;
+            UpdateSizes();
+            break;
+        default:
+            break;
+    }
+    return true;
+}
+
 void Handle(const SDL_Event& e) {
     {
         std::lock_guard lock(UiLock());
@@ -165,14 +194,6 @@ void Handle(const SDL_Event& e) {
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
             LOGR("window: quit event 0x%x", unsigned(e.type));
             g_running = false;
-            break;
-        case SDL_EVENT_WILL_ENTER_BACKGROUND:
-            g_foreground = false;
-            break;
-        case SDL_EVENT_DID_ENTER_FOREGROUND:
-            if (!g_foreground) g_surface_epoch++;
-            g_foreground = true;
-            UpdateSizes();
             break;
         case SDL_EVENT_TERMINATING:
             g_running = false;
@@ -317,7 +338,7 @@ void OpenGameWindow(bool) {
     g_open_cv.wait(lock, [&] { return g_open_done >= ticket || !g_running; });
 }
 
-Mode Desktop() { return {g_pixel_w.load(), g_pixel_h.load()}; }
+Mode Desktop() { return {g_out_w.load(), g_out_h.load()}; }
 Mode WindowPixels() { return {g_pixel_w.load(), g_pixel_h.load()}; }
 
 void UiFrame() {
@@ -427,6 +448,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     app::g_event_base = SDL_RegisterEvents(app::kEventCount);
+    SDL_AddEventWatch(app::Lifecycle, nullptr);
     app::UpdateSizes();
 
     std::error_code ec;

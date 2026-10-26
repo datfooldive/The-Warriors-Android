@@ -1548,6 +1548,13 @@ bool VulkanBackend::PickDevice() {
     if (props_.vendorID != kVendorArm) {
         dynamic_state_ = ext_dynamic_state_ = maintenance5_ = custom_border_ = false;
     }
+    // Mali's r38 driver (Mali-G57 on a Helio G99, driver 09801000) draws with the dynamic topology and strides
+    // wrong: triangles stretch to one point and texture coordinates smear, while a newer driver on the same chip draws
+    // right. Its driver version is rN pM as major N, minor M
+    constexpr uint32_t kMaliDynamicStateFrom = 40;
+    if (props_.vendorID == kVendorArm && VK_API_VERSION_MAJOR(props_.driverVersion) < kMaliDynamicStateFrom) {
+        dynamic_state_ = ext_dynamic_state_ = false;
+    }
     LOGR("GPU: %s (Vulkan %u.%u.%u, driver %08X)", props_.deviceName, VK_API_VERSION_MAJOR(props_.apiVersion),
          VK_API_VERSION_MINOR(props_.apiVersion), VK_API_VERSION_PATCH(props_.apiVersion), props_.driverVersion);
     // reported, not warned: release logs drop warnings and these are what a bug report needs
@@ -4112,13 +4119,18 @@ void VulkanBackend::DrawGeometry(const Assembled& a) {
     VkDeviceSize offsets[16];
     VkDeviceSize sizes[16];
     VkDeviceSize strides[16];
+    // the three component elements (SHORT3, NORMSHORT3, UBYTE3) are read as four, past the last vertex: zeros there.
+    // Out of the bound buffer the fetch is undefined, and Mali gives the whole element garbage or 0, which pulls
+    // vertices to the origin and smears texture coordinates
+    constexpr uint32_t kTail = 16;
     for (uint32_t i = 0; i < a.buffer_count; i++) {
         const VertexBuffer& b = a.buffers[i];
-        Alloc vb = Upload(std::max<uint32_t>(b.bytes, 4), 16);
+        Alloc vb = Upload(uint64_t(b.bytes) + kTail, 16);
         if (b.bytes) std::memcpy(vb.cpu, b.src, b.bytes);
+        std::memset(vb.cpu + b.bytes, 0, kTail);
         buffers[i] = vb.buffer;
         offsets[i] = vb.off;
-        sizes[i] = std::max<uint32_t>(b.bytes, 4);
+        sizes[i] = uint64_t(b.bytes) + kTail;
         strides[i] = b.stride;
     }
     if (dynamic_state_) {
