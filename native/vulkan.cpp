@@ -75,6 +75,9 @@ namespace gpu {
 namespace {
 
 constexpr int kFrames = 3;
+// ImGui's descriptor sets: the font's and the on-screen controls' textures, which touch.cpp lets go of as their sizes
+// change
+constexpr uint32_t kUiSets = 128;
 // the vertex, index and constant data of a frame; a phone's frame is a few megabytes, and the ring is pinned memory
 constexpr uint64_t kUploadSize = 32ull << 20;
 // pipelines made before the cache is written to disk again
@@ -990,6 +993,7 @@ private:
         std::vector<VkDescriptorPool> pools;    // the draws' descriptor sets, reset with the frame
         size_t pool_at = 0;
         std::unordered_map<uint64_t, VkDescriptorSet> sets;  // by the buffers, views and samplers written in them
+        std::vector<VkDescriptorSet> ui_sets;  // UI textures let go of in this frame, freed once it is done
     };
     struct Alloc {
         VkBuffer buffer;
@@ -1061,6 +1065,8 @@ private:
 public:
     // RGBA pixels as an ImGui texture, for the on-screen controls' icons
     ImTextureID AddUiTexture(const uint8_t* rgba, uint32_t w, uint32_t h);
+    void RemoveUiTexture(ImTextureID id);
+    void FreeUiSets(Frame& f);
 
 private:
 
@@ -1335,7 +1341,8 @@ private:
     std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
     std::unordered_map<uint64_t, VkPipeline> blit_psos_;
     ImageRef dummy_[3];  // what a stage without a texture reads: 2D, 3D, cube
-    std::vector<ImageRef> ui_images_;  // the on-screen controls' icons, made once and kept
+    std::unordered_map<ImTextureID, ImageRef> ui_images_;  // the on-screen controls' icons, by their ImGui set
+    uint32_t ui_sets_ = 0;  // sets taken from ui_pool_ for them, freed ones still waiting on their frame included
     // one frame capture: every draw in a text file, each target as the frame leaves it, the textures it read
     FILE* cap_ = nullptr;
     std::filesystem::path cap_dir_;
@@ -1583,9 +1590,10 @@ bool VulkanBackend::CreateDevice() {
     depth_clamp_ = have.depthClamp;
     f2.features.shaderClipDistance = have.shaderClipDistance;
     f2.features.depthBiasClamp = have.depthBiasClamp;
-    f2.features.textureCompressionBC = have.textureCompressionBC;
-    bc_ = have.textureCompressionBC;
-    if (!bc_) LOGR("vulkan: the GPU has no BC textures, DXT is decoded on the CPU");
+    // DXT is decoded on the CPU on every GPU: Mali-G57 has no BC textures, and the BC uploads Adreno's would take
+    // (blocks padded to 4, levels under a block) were never tried on a phone
+    bc_ = false;
+    LOGR("vulkan: DXT is decoded on the CPU (GPU %s BC textures)", have.textureCompressionBC ? "has" : "has no");
     max_aniso_ = have.samplerAnisotropy ? props_.limits.maxSamplerAnisotropy : 1.0f;
     // the per-feature structs rather than VkPhysicalDeviceVulkan1xFeatures, which a 1.1 device does not know; the
     // chain holds only what is used, asked first, and what the driver lists but cannot do is stood in for
@@ -1711,8 +1719,9 @@ bool VulkanBackend::CreateDevice() {
     VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &ti};
     if (timeline_) VK_CHECK(vkCreateSemaphore(dev_, &si, nullptr, &fence_));
     // HLSL to SPIR-V at run time: the NDK has no shaderc, glslang's HLSL front end is the same compiler; no clip
-    // distance, as on Mali and in Black-Android: the path the port is seen to draw right on
-    vkshader::Init(host::FilesDir() / "shadercache", false);
+    // distance, as on Mali and in Black-Android: the path the port is seen to draw right on. A point list's vertex
+    // shader must write the point size without maintenance5, which only Mali takes; Mali is left as it draws
+    vkshader::Init(host::FilesDir() / "shadercache", false, !maintenance5_ && props_.vendorID != kVendorArm);
     return true;
 }
 
@@ -1856,10 +1865,10 @@ bool VulkanBackend::InitUi() {
     // one set per texture the UI draws: the font, the four face buttons and the eight pills, and again as many when the
     // button style is changed. Sixteen was the font's and a few more, and a style change took it past that: the new
     // textures then failed to make a set, and every frame tried again, each try a new image and a full barrier
-    VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64};
+    VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kUiSets};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    pi.maxSets = 64;
+    pi.maxSets = kUiSets;
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &size;
     if (vkCreateDescriptorPool(dev_, &pi, nullptr, &ui_pool_) != VK_SUCCESS) return false;
@@ -2380,6 +2389,7 @@ void VulkanBackend::Submit(bool wait) {
         WaitFence(fence_value_);
         vkResetCommandPool(dev_, f.pool, 0);
         ResetPools(f);
+        FreeUiSets(f);
         f.garbage.clear();
         f.garbage_buffers.clear();
         f.used = 0;
@@ -2788,6 +2798,12 @@ ImageRef VulkanBackend::CreatePixelTexture(const std::vector<uint8_t>& px, uint3
 // RGBA pixels as an ImGui texture: copied into a BGRA image left readable, the sampler made once, the image kept
 // RGBA pixels as an ImGui texture: copied into a BGRA image left readable, the sampler made once, the image kept
 ImTextureID VulkanBackend::AddUiTexture(const uint8_t* rgba, uint32_t w, uint32_t h) {
+    // a pool past its sets hands ImGui a null set, which it writes all the same: Adreno's driver crashes on that
+    if (ui_sets_ + 1 >= kUiSets) {  // the font has one
+        static bool logged = false;
+        if (!std::exchange(logged, true)) LOGE("vulkan: no UI descriptor set left for a %ux%u texture", w, h);
+        return ImTextureID();
+    }
     std::vector<uint8_t> bgra(size_t(w) * h * 4);
     for (size_t i = 0; i < bgra.size(); i += 4) {
         bgra[i] = rgba[i + 2];
@@ -2806,8 +2822,26 @@ ImTextureID VulkanBackend::AddUiTexture(const uint8_t* rgba, uint32_t w, uint32_
     si.maxLod = 0.25f;
     VkSampler sampler = EnsureSampler(si, nullptr);
     ImTextureID id = ImGui_ImplVulkan_AddTexture(sampler, tex->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    ui_images_.push_back(std::move(tex));
+    ui_sets_++;
+    ui_images_[id] = std::move(tex);
     return id;
+}
+
+// draws already recorded may read the texture: its set and image go once the frame is done
+void VulkanBackend::RemoveUiTexture(ImTextureID id) {
+    auto it = ui_images_.find(id);
+    if (it == ui_images_.end()) return;
+    CurrentFrame().ui_sets.push_back(VkDescriptorSet(id));
+    Release(std::move(it->second));
+    ui_images_.erase(it);
+}
+
+void VulkanBackend::FreeUiSets(Frame& f) {
+    if (f.ui_sets.empty()) return;
+    std::lock_guard lock(app::UiLock());
+    for (VkDescriptorSet set : f.ui_sets) ImGui_ImplVulkan_RemoveTexture(set);
+    ui_sets_ -= uint32_t(f.ui_sets.size());
+    f.ui_sets.clear();
 }
 
 // CPU pixels of a color surface into its host target, scaled
@@ -5118,6 +5152,7 @@ void VulkanBackend::ResetFrame() {
     }
     vkResetCommandPool(dev_, f.pool, 0);
     ResetPools(f);
+    FreeUiSets(f);
     f.garbage.clear();
     f.garbage_buffers.clear();
     f.used = 0;
@@ -5606,4 +5641,8 @@ void WaitGpuFrame(uint64_t n) {
 
 ImTextureID vkui::Texture(const uint8_t* rgba, uint32_t w, uint32_t h) {
     return gpu::g_vulkan ? gpu::g_vulkan->AddUiTexture(rgba, w, h) : ImTextureID();
+}
+
+void vkui::Release(ImTextureID id) {
+    if (gpu::g_vulkan && id) gpu::g_vulkan->RemoveUiTexture(id);
 }

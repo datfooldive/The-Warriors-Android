@@ -20,6 +20,7 @@ namespace {
 std::filesystem::path g_dir;
 std::mutex g_lock;
 bool g_clip_distance = true;
+bool g_point_size = false;
 // bumped when the translation below changes, so older cached modules are not used
 constexpr uint32_t kCacheVersion = 3;
 
@@ -107,15 +108,23 @@ std::string Adapt(const std::string& hlsl, Stage stage) {
         static const std::regex write(R"(\n[ \t]*o\.behind = [^;]*;)");
         s = std::regex_replace(s, write, "");
     }
+    // the game's vertex shaders (the ones with a fog output) give points their size; the passes draw no points
+    if (stage == Stage::Vertex && g_point_size) {
+        static const std::regex member(R"((\n[ \t]*)(float fogamt : TEXCOORD4;))");
+        static const std::regex write(R"((\n[ \t]*)(o\.fogamt = [^;]*;))");
+        // glslang reads no semantic as the point size: the builtin is named
+        s = std::regex_replace(s, member, "$1$2$1[[vk::builtin(\"PointSize\")]] float psize : PSIZE;");
+        s = std::regex_replace(s, write, "$1$2$1o.psize = 1;");
+    }
     // the vertex inputs at the location of their register, ATTRn: the pipeline's attributes are numbered so
     static const std::regex attr(R"((\n[ \t]*)(\w+ v\d+ : ATTR(\d+);))");
     return std::regex_replace(s, attr, "$1[[vk::location($3)]] $2");
 }
 
 std::filesystem::path CachePath(uint64_t hash) {
-    char name[48];
-    std::snprintf(name, sizeof(name), "%016llx_%u%s.spv", (unsigned long long)hash, kCacheVersion,
-                  g_clip_distance ? "" : "_noclip");
+    char name[64];
+    std::snprintf(name, sizeof(name), "%016llx_%u%s%s.spv", (unsigned long long)hash, kCacheVersion,
+                  g_clip_distance ? "" : "_noclip", g_point_size ? "_psize" : "");
     return g_dir / name;
 }
 
@@ -145,9 +154,10 @@ void Store(uint64_t hash, const std::vector<uint32_t>& spirv) {
 
 }  // namespace
 
-void Init(const std::filesystem::path& cache_dir, bool clip_distance) {
+void Init(const std::filesystem::path& cache_dir, bool clip_distance, bool point_size) {
     std::lock_guard lock(g_lock);
     g_clip_distance = clip_distance;
+    g_point_size = point_size;
     glslang::InitializeProcess();
     std::error_code ec;
     std::filesystem::create_directories(cache_dir, ec);

@@ -15,8 +15,9 @@ constexpr uint32_t kBindingSampler = 6;
 enum class Stage { Vertex, Fragment };
 
 // clip_distance false: the vertex shader writes no SV_ClipDistance (Mali's compiler crashes on it, Mali-G57 driver
-// 0D801000, and a GPU without shaderClipDistance cannot take it)
-void Init(const std::filesystem::path& cache_dir, bool clip_distance);
+// 0D801000, and a GPU without shaderClipDistance cannot take it); point_size: the game's vertex shaders write a point
+// size of 1, which a point list's pipeline reads (left undefined without VK_KHR_maintenance5)
+void Init(const std::filesystem::path& cache_dir, bool clip_distance, bool point_size);
 // hash names the module in the cache: the renderer's hash of the source, entry and profile
 bool Compile(const std::string& hlsl, const char* entry, Stage stage, uint64_t hash, std::vector<uint32_t>& spirv);
 

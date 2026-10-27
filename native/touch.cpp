@@ -186,8 +186,9 @@ void DrawArt(ImDrawList* dl, int art, ImVec2 c, float h, ImU32 col) {
 // A line icon (ui_paths.h) drawn into a texture of the very size it is shown at, its lines size / 24 thick as the gear's
 // are. Each pixel's coverage comes from its distance to the nearest line, so where the lines meet they join as one
 // stroke with round ends and corners: drawn as separate translucent lines, every join came out darker and thicker.
-// Made once for each size the controls take, kept by size in steps of 4 px, so dragging the panel's button size makes a
-// few dozen at most.
+// Made for each size the controls take, in steps of 4 px. Only the latest sizes of an icon are kept: dragging the
+// panel's button size made one per step, every one an ImGui descriptor set, until the pool ran out.
+constexpr size_t kIconSizesKept = 2;
 struct IconTexture {
     const float* icon = nullptr;
     int size = 0;
@@ -255,7 +256,15 @@ void DrawIcon(ImDrawList* dl, const float* d, ImVec2 c, float size, ImU32 col) {
     IconTexture* it = nullptr;
     for (IconTexture& t : g_icon_tex)
         if (t.icon == d && t.size == px) it = &t;
-    if (!it) it = &g_icon_tex.emplace_back(IconTexture{d, px, RasterIcon(d, px)});
+    if (!it) {
+        size_t kept = size_t(std::count_if(g_icon_tex.begin(), g_icon_tex.end(), [&](auto& t) { return t.icon == d; }));
+        if (kept >= kIconSizesKept) {
+            auto oldest = std::find_if(g_icon_tex.begin(), g_icon_tex.end(), [&](auto& t) { return t.icon == d; });
+            vkui::Release(oldest->tex);
+            g_icon_tex.erase(oldest);
+        }
+        it = &g_icon_tex.emplace_back(IconTexture{d, px, RasterIcon(d, px)});
+    }
     if (!it->tex) return;
     ImVec2 a(std::floor(c.x - float(px) / 2), std::floor(c.y - float(px) / 2));
     dl->AddImage(it->tex, a, ImVec2(a.x + float(px), a.y + float(px)), ImVec2(0, 0), ImVec2(1, 1), col);
