@@ -57,6 +57,7 @@ class SettingsDialog extends Dialog {
     private TextView cheatHint;
     private TextView[] cheatRows = new TextView[0];
     private final LinearLayout[] pages = new LinearLayout[5];
+    private ScrollView scroll;
 
     private TextView antiAliasText, anisoText, aspectText, cameraModeText, frameRateText;
     private TextView vsync, frameSkip, fps, hdr;
@@ -67,7 +68,16 @@ class SettingsDialog extends Dialog {
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         setCanceledOnTouchOutside(true);
 
-        LinearLayout frame = new LinearLayout(activity);
+        // never taller than most of the screen: past that the pages scroll between the tabs and the footer
+        LinearLayout frame = new LinearLayout(activity) {
+            @Override
+            protected void onMeasure(int widthSpec, int heightSpec) {
+                int most = (int) (getResources().getDisplayMetrics().heightPixels * 0.9f);
+                if (MeasureSpec.getMode(heightSpec) == MeasureSpec.UNSPECIFIED || MeasureSpec.getSize(heightSpec) > most)
+                    heightSpec = MeasureSpec.makeMeasureSpec(most, MeasureSpec.AT_MOST);
+                super.onMeasure(widthSpec, heightSpec);
+            }
+        };
         frame.setOrientation(LinearLayout.VERTICAL);
         frame.setBackground(box(BG, true));
         frame.setPadding(1, 1, 1, 1);
@@ -112,10 +122,11 @@ class SettingsDialog extends Dialog {
         LinearLayout holder = new LinearLayout(activity);
         holder.setOrientation(LinearLayout.VERTICAL);
         for (LinearLayout p : pages) holder.addView(p);
-        ScrollView scroll = new ScrollView(activity);
-        scroll.setVerticalScrollBarEnabled(false);
+        scroll = new ScrollView(activity);
         scroll.addView(holder);
-        root.addView(scroll);
+        // the weight lets the page shrink to what the footer leaves it, rather than push the footer off
+        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         root.addView(line());
         root.addView(footer());
@@ -325,6 +336,7 @@ class SettingsDialog extends Dialog {
             pages[i].setVisibility(i == at ? View.VISIBLE : View.GONE);
             tabs[i].setBackground(box(i == at ? BUTTON_ON : BUTTON, false));
         }
+        scroll.scrollTo(0, 0);
     }
 
     private LinearLayout footer() {
