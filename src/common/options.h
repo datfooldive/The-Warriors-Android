@@ -22,12 +22,16 @@ struct Options {
                                         // screen's short side from where the finger went down (Android)
     uint32_t camera_mode = 0;  // the on-screen right stick: 0 floating, centred where the finger went down; 1 fixed,
                                // a stick of its own the layout editor places; 2 swipe, a drag turns the view (Android)
+    uint32_t frame_rate = 0;   // 0 auto, the settings file's cap; 1 held to 30 a second (Android)
 };
 
 inline Options& Opt() {
     static Options options;
     return options;
 }
+
+// the frames a second the game is held to: 30 when the panel locks it, the settings file's cap otherwise (0 none)
+inline uint32_t FrameCap(uint32_t file_cap) { return Opt().frame_rate == 1 ? 30 : file_cap; }
 
 inline std::atomic<bool> g_hdr_display{false};  // the window's display has HDR on, from the renderer
 

@@ -29,7 +29,7 @@ void Ui(double fps) {
     dl->AddRectFilled(ImVec2(at.x - size * 0.25f, at.y), ImVec2(at.x + extent.x + size * 0.25f, at.y + extent.y),
                       IM_COL32(0, 0, 0, 120), size * 0.2f);
     // green near the cap (60 when unlimited), amber under it
-    uint32_t cap = app::Get().fps_cap ? app::Get().fps_cap : 60;
+    uint32_t cap = game::FrameCap(app::Get().fps_cap) ? game::FrameCap(app::Get().fps_cap) : 60;
     bool full = fps >= cap * 0.93;
     dl->AddText(ImGui::GetFont(), size, at, full ? IM_COL32(120, 230, 120, 230) : IM_COL32(240, 200, 90, 230), text);
 }
@@ -60,6 +60,7 @@ const app::GameInfo app::kGame = {
                 {"controls_scale", nullptr, &game::Opt().controls_scale},
                 {"camera_sensitivity", nullptr, &game::Opt().camera_sensitivity},
                 {"camera_mode", nullptr, &game::Opt().camera_mode},
+                {"frame_rate", nullptr, &game::Opt().frame_rate},
                 {"hdr_output", &game::Opt().hdr_output, nullptr}},
     .load = LoadControls,                   // reads more from the settings file's toml::table
     .save = SaveControls,                   // writes more into it

@@ -434,7 +434,7 @@ private:
     void PlanNextFrame() {
         constexpr int kMaxSkips = 2;
         auto now = Clock::now();
-        uint32_t cap = app::Get().fps_cap ? app::Get().fps_cap : 60;
+        uint32_t cap = game::FrameCap(app::Get().fps_cap) ? game::FrameCap(app::Get().fps_cap) : 60;
         double budget = 1000.0 / cap;
         // the work since the last present: the batches finished since, and this one so far
         double ms = frame_busy_ms_ + std::chrono::duration<double, std::milli>(now - batch_start_).count();

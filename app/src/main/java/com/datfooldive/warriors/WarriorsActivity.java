@@ -80,6 +80,9 @@ public class WarriorsActivity extends SDLActivity {
     static native int[] nativeSettings();
     static native void nativeSettingsSet(int key, int value, boolean commit);
     static native void nativeSettingsDefaults();
+    static native String[] nativeCheats();
+    static native void nativeCheat(int index);
+    static native boolean nativeCheatsAvailable();
     static native void nativeEditLayout();
     static native void nativeEditEnd();
     static native void nativeEditReset();

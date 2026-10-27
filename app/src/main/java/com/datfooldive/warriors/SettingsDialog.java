@@ -26,7 +26,8 @@ class SettingsDialog extends Dialog {
 
     // the numbers native/settings_bridge.cpp reads and writes, in its order
     static final int RESOLUTION = 0, ANTI_ALIAS = 1, ANISO = 2, VSYNC = 3, FRAME_SKIP = 4, ASPECT = 5, FPS = 6,
-            HDR = 7, HDR_AVAILABLE = 8, SCALE = 9, OPACITY = 10, OUT_W = 11, OUT_H = 12, CAMERA = 13, CAMERA_MODE = 14, COUNT = 15;
+            HDR = 7, HDR_AVAILABLE = 8, SCALE = 9, OPACITY = 10, OUT_W = 11, OUT_H = 12, CAMERA = 13, CAMERA_MODE = 14,
+            FRAME_RATE = 15, COUNT = 16;
 
     // ImGui's StyleColorsDark, the alpha ones over the panel's background
     private static final int BG = 0xF00F0F0F;          // WindowBg
@@ -45,16 +46,19 @@ class SettingsDialog extends Dialog {
     private static final int[] kAnisoValues = {0, 2, 4, 8, 16};
     private static final String[] kAspect = {"ORIGINAL", "16:9", "STRETCH", "FILL"};
     private static final String[] kCameraMode = {"FLOATING", "FIXED", "SWIPE"};
+    private static final String[] kFrameRate = {"AUTO", "30 FPS"};
 
     private final WarriorsActivity activity;  // the dialog's own context is a wrapper around it, not it
     private final int[] v = new int[COUNT];
     private final Slider[] bars = new Slider[COUNT];
     private boolean loading;  // a reload filling the widgets is not a change to write back
 
-    private final TextView[] tabs = new TextView[4];
-    private final LinearLayout[] pages = new LinearLayout[4];
+    private final TextView[] tabs = new TextView[5];
+    private TextView cheatHint;
+    private TextView[] cheatRows = new TextView[0];
+    private final LinearLayout[] pages = new LinearLayout[5];
 
-    private TextView antiAliasText, anisoText, aspectText, cameraModeText;
+    private TextView antiAliasText, anisoText, aspectText, cameraModeText, frameRateText;
     private TextView vsync, frameSkip, fps, hdr;
 
     SettingsDialog(WarriorsActivity activity) {
@@ -82,8 +86,8 @@ class SettingsDialog extends Dialog {
         LinearLayout bar = new LinearLayout(activity);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setPadding(0, dp(2), 0, dp(4));
-        String[] names = {"GRAPHICS", "PERFORMANCE", "DISPLAY", "CONTROLS"};
-        for (int i = 0; i < 4; i++) {
+        String[] names = {"GRAPHICS", "PERFORMANCE", "DISPLAY", "CONTROLS", "CHEATS"};
+        for (int i = 0; i < names.length; i++) {
             final int at = i;
             tabs[i] = chip(names[i], 12);
             tabs[i].setOnClickListener(x -> select(at));
@@ -94,7 +98,7 @@ class SettingsDialog extends Dialog {
         root.addView(bar);
         root.addView(line());
 
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < pages.length; i++) {
             pages[i] = new LinearLayout(activity);
             pages[i].setOrientation(LinearLayout.VERTICAL);
             pages[i].setVisibility(View.GONE);
@@ -103,6 +107,7 @@ class SettingsDialog extends Dialog {
         performance(pages[1]);
         display(pages[2]);
         controls(pages[3]);
+        cheats(pages[4]);
 
         LinearLayout holder = new LinearLayout(activity);
         holder.setOrientation(LinearLayout.VERTICAL);
@@ -146,6 +151,7 @@ class SettingsDialog extends Dialog {
     }
 
     private void performance(LinearLayout box) {
+        frameRateText = stepper(box, "FRAME RATE", kFrameRate, FRAME_RATE);
         vsync = toggle(box, "VERTICAL SYNC", VSYNC);
         frameSkip = toggle(box, "FRAME SKIP", FRAME_SKIP);
     }
@@ -172,6 +178,30 @@ class SettingsDialog extends Dialog {
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.topMargin = dp(10);
         box.addView(edit, lp);
+    }
+
+    // the title's own codes: one picked closes the panel and is pressed on the pad for the player, as the game
+    // reads it during play (src/common/cheats.cpp); outside play the rows are there but take no tap
+    private void cheats(LinearLayout box) {
+        cheatHint = text("", 11, DIM);
+        box.addView(cheatHint);
+        String[] names = WarriorsActivity.nativeCheats();
+        cheatRows = new TextView[names.length];
+        for (int i = 0; i < names.length; i++) {
+            final int at = i;
+            TextView row = chip(names[i], 13);
+            cheatRows[i] = row;
+            row.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            row.setPadding(dp(8), dp(6), dp(8), dp(6));
+            row.setOnClickListener(x -> {
+                WarriorsActivity.nativeCheat(at);
+                dismiss();
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = dp(3);
+            box.addView(row, lp);
+        }
     }
 
     // a row whose value is dragged: the label, and an ImGui slider with the value inside it
@@ -291,7 +321,7 @@ class SettingsDialog extends Dialog {
     // ---------------------------------------------------------------- the panel
 
     private void select(int at) {
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < pages.length; i++) {
             pages[i].setVisibility(i == at ? View.VISIBLE : View.GONE);
             tabs[i].setBackground(box(i == at ? BUTTON_ON : BUTTON, false));
         }
@@ -324,6 +354,13 @@ class SettingsDialog extends Dialog {
     // the values as the file has them now, into the widgets
     private void reload() {
         System.arraycopy(WarriorsActivity.nativeSettings(), 0, v, 0, COUNT);
+        boolean cheats = WarriorsActivity.nativeCheatsAvailable();
+        cheatHint.setText(cheats ? "The panel closes and the code is entered for you."
+                : "Cheats work only during play, in a mission. Open this again there.");
+        for (TextView row : cheatRows) {
+            row.setEnabled(cheats);
+            row.setAlpha(cheats ? 1f : 0.4f);
+        }
         loading = true;
         bars[RESOLUTION].setProgress((v[RESOLUTION] - 20) / 5);
         show(RESOLUTION, 20, 5);
@@ -331,6 +368,7 @@ class SettingsDialog extends Dialog {
         anisoText.setText(kAniso[index(ANISO, kAniso.length)]);
         paint(vsync, v[VSYNC] != 0);
         paint(frameSkip, v[FRAME_SKIP] != 0);
+        frameRateText.setText(kFrameRate[Math.min(v[FRAME_RATE], 1)]);
         aspectText.setText(kAspect[Math.min(v[ASPECT], 3)]);
         paint(fps, v[FPS] != 0);
         paint(hdr, v[HDR] != 0);

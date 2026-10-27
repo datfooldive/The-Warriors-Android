@@ -23,6 +23,7 @@
 #include <imgui.h>
 
 #include "app/app.h"
+#include "common/options.h"
 #include "core/input.h"
 #include "core/log.h"
 #include "host.h"
@@ -386,7 +387,7 @@ void UiFrame() {
 void Pace() {
     using clock = std::chrono::steady_clock;
     static clock::time_point next = clock::now();
-    uint32_t cap = Get().fps_cap;
+    uint32_t cap = game::FrameCap(Get().fps_cap);
     auto now = clock::now();
     if (!cap) {
         next = now;

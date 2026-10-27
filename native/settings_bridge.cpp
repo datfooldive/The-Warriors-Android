@@ -18,7 +18,7 @@ namespace {
 // the order the dialog's values are in, the same numbers SettingsDialog.java has
 enum Key : int {
     kResolution, kAntiAlias, kAniso, kVsync, kFrameSkip, kAspect, kFpsCounter, kHdr, kHdrAvailable, kControlsScale,
-    kControlsOpacity, kOutWidth, kOutHeight, kCameraSensitivity, kCameraMode, kKeyCount
+    kControlsOpacity, kOutWidth, kOutHeight, kCameraSensitivity, kCameraMode, kFrameRate, kKeyCount
 };
 
 // the one index the panel shows for the two settings anti-aliasing is made of: 0 off, 1 SMAA, 2 MSAA 2X, 3 MSAA 4X
@@ -63,6 +63,7 @@ extern "C" JNIEXPORT jintArray JNICALL Java_com_datfooldive_warriors_WarriorsAct
     v[kOutHeight] = jint(out.height);
     v[kCameraSensitivity] = jint(o.camera_sensitivity);
     v[kCameraMode] = jint(o.camera_mode);
+    v[kFrameRate] = jint(o.frame_rate);
     jintArray arr = env->NewIntArray(kKeyCount);
     if (arr) env->SetIntArrayRegion(arr, 0, kKeyCount, v);
     return arr;
@@ -91,6 +92,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_datfooldive_warriors_WarriorsActivity
         case kControlsOpacity: o.controls_opacity = uint32_t(std::clamp<jint>(value, 20, 100)); break;
         case kCameraSensitivity: o.camera_sensitivity = uint32_t(std::clamp<jint>(value, 50, 300)); break;
         case kCameraMode: o.camera_mode = uint32_t(std::clamp<jint>(value, 0, 2)); break;
+        case kFrameRate: o.frame_rate = uint32_t(std::clamp<jint>(value, 0, 1)); break;
         default: return;
     }
     if (commit) app::Save();
@@ -113,6 +115,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_datfooldive_warriors_WarriorsActivity
     o.controls_opacity = 100;
     o.camera_sensitivity = game::Options{}.camera_sensitivity;
     o.camera_mode = game::Options{}.camera_mode;
+    o.frame_rate = game::Options{}.frame_rate;
     touch::EditReset();
     app::Save();
 }
