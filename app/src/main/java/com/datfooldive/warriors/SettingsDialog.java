@@ -2,24 +2,25 @@ package com.datfooldive.warriors;
 
 import android.app.Dialog;
 import android.content.Context;
-import android.content.res.ColorStateList;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.SeekBar;
 import android.widget.TextView;
 
 import java.util.Locale;
 
 // The settings panel, drawn by Android rather than by the game: the activity's own dialog over the running picture,
-// dark with the game's red and gold. The values live in native/settings_bridge.cpp, which this reads once when it
+// in Dear ImGui's default dark look (square corners, one pixel borders, its blue frames and grabs). The values live in native/settings_bridge.cpp, which this reads once when it
 // opens and writes back one at a time; a slider only writes the file when it is let go, not on every step of a drag.
 class SettingsDialog extends Dialog {
 
@@ -27,13 +28,17 @@ class SettingsDialog extends Dialog {
     static final int RESOLUTION = 0, ANTI_ALIAS = 1, ANISO = 2, VSYNC = 3, FRAME_SKIP = 4, ASPECT = 5, FPS = 6,
             HDR = 7, HDR_AVAILABLE = 8, SCALE = 9, OPACITY = 10, OUT_W = 11, OUT_H = 12, CAMERA = 13, CAMERA_MODE = 14, COUNT = 15;
 
-    private static final int BG = 0xFF0F0D0D;
-    private static final int BORDER = 0xFFB8241A;
-    private static final int GOLD = 0xFFEBB85C;
-    private static final int TEXT = 0xFFEDE8E0;
-    private static final int DIM = 0xFF9A9188;
-    private static final int CHIP = 0xFF292423;
-    private static final int CHIP_ON = 0xFF3A2B27;
+    // ImGui's StyleColorsDark, the alpha ones over the panel's background
+    private static final int BG = 0xF00F0F0F;          // WindowBg
+    private static final int BORDER = 0xFF4A4A55;      // Border
+    private static final int TITLE = 0xFF294A7A;       // TitleBgActive
+    private static final int TEXT = 0xFFFFFFFF;        // Text
+    private static final int DIM = 0xFF808080;         // TextDisabled
+    private static final int FRAME = 0xFF1D2F48;       // FrameBg
+    private static final int BUTTON = 0xFF1F3B5E;      // Button
+    private static final int BUTTON_ON = 0xFF3369AD;   // TabActive
+    private static final int GRAB = 0xFF3D85E0;        // SliderGrab
+    private static final int GRAB_ON = 0xFF4296FA;     // SliderGrabActive, CheckMark
 
     private static final String[] kAntiAlias = {"OFF", "SMAA", "MSAA 2X", "MSAA 4X"};
     private static final String[] kAniso = {"GAME DEFAULT", "2X", "4X", "8X", "16X"};
@@ -43,8 +48,7 @@ class SettingsDialog extends Dialog {
 
     private final WarriorsActivity activity;  // the dialog's own context is a wrapper around it, not it
     private final int[] v = new int[COUNT];
-    private final SeekBar[] bars = new SeekBar[COUNT];
-    private final TextView[] numbers = new TextView[COUNT];
+    private final Slider[] bars = new Slider[COUNT];
     private boolean loading;  // a reload filling the widgets is not a change to write back
 
     private final TextView[] tabs = new TextView[4];
@@ -59,34 +63,36 @@ class SettingsDialog extends Dialog {
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         setCanceledOnTouchOutside(true);
 
+        LinearLayout frame = new LinearLayout(activity);
+        frame.setOrientation(LinearLayout.VERTICAL);
+        frame.setBackground(box(BG, true));
+        frame.setPadding(1, 1, 1, 1);
+
+        // the title bar, as an ImGui window's
+        TextView title = text("Settings", 14, TEXT);
+        title.setBackgroundColor(TITLE);
+        title.setPadding(dp(8), dp(4), dp(8), dp(4));
+        frame.addView(title);
+
         LinearLayout root = new LinearLayout(activity);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), dp(12), dp(18), dp(12));
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(BG);
-        bg.setCornerRadius(dp(10));
-        bg.setStroke(dp(2), BORDER);
-        root.setBackground(bg);
-
-        TextView title = text("SETTINGS", 17, GOLD);
-        title.setGravity(Gravity.CENTER);
-        title.setLetterSpacing(0.14f);
-        root.addView(title);
-        root.addView(line());
+        root.setPadding(dp(10), dp(6), dp(10), dp(8));
+        frame.addView(root);
 
         LinearLayout bar = new LinearLayout(activity);
         bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setPadding(0, dp(9), 0, dp(6));
+        bar.setPadding(0, dp(2), 0, dp(4));
         String[] names = {"GRAPHICS", "PERFORMANCE", "DISPLAY", "CONTROLS"};
         for (int i = 0; i < 4; i++) {
             final int at = i;
             tabs[i] = chip(names[i], 12);
             tabs[i].setOnClickListener(x -> select(at));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            lp.setMargins(dp(2), 0, dp(2), 0);
+            lp.setMargins(i == 0 ? 0 : dp(2), 0, 0, 0);
             bar.addView(tabs[i], lp);
         }
         root.addView(bar);
+        root.addView(line());
 
         for (int i = 0; i < 4; i++) {
             pages[i] = new LinearLayout(activity);
@@ -109,7 +115,7 @@ class SettingsDialog extends Dialog {
         root.addView(line());
         root.addView(footer());
 
-        setContentView(root);
+        setContentView(frame);
         select(0);
         reload();
     }
@@ -156,13 +162,8 @@ class SettingsDialog extends Dialog {
         cameraModeText = stepper(box, "RIGHT STICK", kCameraMode, CAMERA_MODE);
         slider(box, "CAMERA SENSITIVITY", CAMERA, 50, 300, 5);
 
-        TextView edit = chip("MOVE CONTROLS", 14);
-        edit.setTextColor(GOLD);
-        GradientDrawable accent = new GradientDrawable();
-        accent.setColor(0xFF7A2E24);
-        accent.setCornerRadius(dp(6));
-        edit.setBackground(accent);
-        edit.setPadding(0, dp(9), 0, dp(9));
+        TextView edit = chip("MOVE CONTROLS", 13);
+        edit.setPadding(0, dp(7), 0, dp(7));
         edit.setOnClickListener(x -> {
             activity.beginLayoutEdit();
             dismiss();
@@ -173,75 +174,66 @@ class SettingsDialog extends Dialog {
         box.addView(edit, lp);
     }
 
-    // a row whose value is dragged: the label and the value on one line, the bar under them
+    // a row whose value is dragged: the label, and an ImGui slider with the value inside it
     private void slider(LinearLayout box, String label, int key, int min, int max, int step) {
         LinearLayout row = new LinearLayout(getContext());
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(0, dp(5), 0, dp(3));
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(3), 0, dp(3));
+        row.addView(text(label, 13, TEXT), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        LinearLayout head = new LinearLayout(getContext());
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.addView(text(label, 13, TEXT), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView value = text("", 13, GOLD);
-        head.addView(value);
-        row.addView(head);
-
-        SeekBar bar = new SeekBar(getContext());
-        bar.setMax((max - min) / step);
-        bar.setPadding(dp(2), 0, dp(2), 0);
-        bar.setProgressTintList(ColorStateList.valueOf(GOLD));
-        bar.setProgressBackgroundTintList(ColorStateList.valueOf(CHIP_ON));
-        bar.setThumbTintList(ColorStateList.valueOf(GOLD));
-        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+        Slider bar = new Slider(getContext(), (max - min) / step);
+        bar.listener = new Slider.Listener() {
             @Override
-            public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
+            public void changed(int progress) {
                 if (loading) return;
                 WarriorsActivity.nativeSettingsSet(key, min + progress * step, false);
                 show(key, min, step);
             }
 
             @Override
-            public void onStartTrackingTouch(SeekBar s) {}
-
-            @Override
-            public void onStopTrackingTouch(SeekBar s) {
-                WarriorsActivity.nativeSettingsSet(key, min + s.getProgress() * step, true);
+            public void released(int progress) {
+                WarriorsActivity.nativeSettingsSet(key, min + progress * step, true);
             }
-        });
-        row.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
+        };
+        row.addView(bar, new LinearLayout.LayoutParams(0, dp(26), 1.1f));
         box.addView(row);
         bars[key] = bar;
-        numbers[key] = value;
     }
 
-    // a slider's value beside its label: the percentage, and for the resolution the pixels it makes
+    // a slider's value inside it: the percentage, and for the resolution the pixels it makes
     private void show(int key, int min, int step) {
-        int value = min + bars[key].getProgress() * step;
+        int value = min + bars[key].progress * step;
         if (key == RESOLUTION)
-            numbers[key].setText(String.format(Locale.US, "%d%% (%dx%d)", value, v[OUT_W] * value / 100,
+            bars[key].setText(String.format(Locale.US, "%d%% (%dx%d)", value, v[OUT_W] * value / 100,
                     v[OUT_H] * value / 100));
-        else numbers[key].setText(String.format(Locale.US, "%d%%", value));
+        else bars[key].setText(String.format(Locale.US, "%d%%", value));
     }
 
     private TextView stepper(LinearLayout box, String label, String[] names, int key) {
         LinearLayout row = new LinearLayout(getContext());
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(5), 0, dp(5));
+        row.setPadding(0, dp(3), 0, dp(3));
         row.addView(text(label, 13, TEXT), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        TextView value = text(names[0], 13, GOLD);
+        // an ImGui combo's look: the value in a frame, the arrows as buttons beside it
+        LinearLayout control = new LinearLayout(getContext());
+        control.setOrientation(LinearLayout.HORIZONTAL);
+        TextView value = text(names[0], 13, TEXT);
         value.setGravity(Gravity.CENTER);
-        value.setMinWidth(dp(96));
-        value.setPadding(dp(6), 0, dp(6), 0);
+        value.setBackgroundColor(FRAME);
 
-        TextView down = chip("\u2039", 16);
-        TextView up = chip("\u203A", 16);
+        TextView down = chip("<", 13);
+        TextView up = chip(">", 13);
         down.setOnClickListener(x -> step(key, -1, names.length, value, names));
         up.setOnClickListener(x -> step(key, 1, names.length, value, names));
-        row.addView(down, new LinearLayout.LayoutParams(dp(34), dp(30)));
-        row.addView(value, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(30)));
-        row.addView(up, new LinearLayout.LayoutParams(dp(34), dp(30)));
+        LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(dp(26), ViewGroup.LayoutParams.MATCH_PARENT);
+        gap.setMargins(dp(2), 0, 0, 0);
+        control.addView(value, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        control.addView(down, gap);
+        control.addView(up, new LinearLayout.LayoutParams(gap));
+        row.addView(control, new LinearLayout.LayoutParams(0, dp(26), 1.1f));
         box.addView(row);
         return value;
     }
@@ -265,19 +257,17 @@ class SettingsDialog extends Dialog {
         return Math.max(0, Math.min(v[key], count - 1));
     }
 
-    // A switch of this panel's own: android.widget.Switch draws nothing at all under the game's bare theme
-    // (Theme.NoTitleBar.Fullscreen has no switch style, so the thumb and track come out empty), and the state reads
-    // better as a word anyway — gold while it is on
+    // A checkbox of this panel's own, as ImGui draws one: android.widget.Switch and CheckBox draw nothing at all under
+    // the game's bare theme (Theme.NoTitleBar.Fullscreen has no style for them, so they come out empty)
     private TextView toggle(LinearLayout box, String label, int key) {
         LinearLayout row = new LinearLayout(getContext());
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(4), 0, dp(4));
+        row.setPadding(0, dp(3), 0, dp(3));
         row.addView(text(label, 13, TEXT), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView sw = text("", 12, DIM);
+        TextView sw = text("", 14, GRAB_ON);
         sw.setGravity(Gravity.CENTER);
-        sw.setMinWidth(dp(62));
-        sw.setPadding(dp(8), dp(5), dp(8), dp(5));
+        sw.setBackgroundColor(FRAME);
         sw.setClickable(true);
         sw.setFocusable(true);
         sw.setOnClickListener(x -> {
@@ -287,7 +277,7 @@ class SettingsDialog extends Dialog {
             WarriorsActivity.nativeSettingsSet(key, on ? 1 : 0, true);
         });
         paint(sw, false);
-        row.addView(sw);
+        row.addView(sw, new LinearLayout.LayoutParams(dp(26), dp(26)));
         box.addView(row);
         return sw;
     }
@@ -295,9 +285,7 @@ class SettingsDialog extends Dialog {
     // the switch as it reads for a state, whether that came from a tap or from the file
     private void paint(TextView sw, boolean on) {
         sw.setTag(on);
-        sw.setText(on ? "ON" : "OFF");
-        sw.setTextColor(on ? GOLD : DIM);
-        sw.setBackground(chipBackground(on));
+        sw.setText(on ? "\u2713" : "");
     }
 
     // ---------------------------------------------------------------- the panel
@@ -305,8 +293,7 @@ class SettingsDialog extends Dialog {
     private void select(int at) {
         for (int i = 0; i < 4; i++) {
             pages[i].setVisibility(i == at ? View.VISIBLE : View.GONE);
-            tabs[i].setTextColor(i == at ? GOLD : DIM);
-            tabs[i].setBackground(chipBackground(i == at));
+            tabs[i].setBackground(box(i == at ? BUTTON_ON : BUTTON, false));
         }
     }
 
@@ -314,22 +301,21 @@ class SettingsDialog extends Dialog {
         LinearLayout row = new LinearLayout(getContext());
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(9), 0, 0);
+        row.setPadding(0, dp(6), 0, 0);
         row.addView(text("Changes are saved as you make them", 11, DIM),
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView back = chip("BACK", 13);
         back.setOnClickListener(x -> dismiss());
         TextView defaults = chip("DEFAULTS", 13);
-        defaults.setTextColor(GOLD);
         defaults.setOnClickListener(x -> {
             WarriorsActivity.nativeSettingsDefaults();
             reload();
         });
-        LinearLayout.LayoutParams one = new LinearLayout.LayoutParams(dp(96), dp(34));
-        one.setMargins(dp(6), 0, 0, 0);
-        LinearLayout.LayoutParams two = new LinearLayout.LayoutParams(dp(96), dp(34));
-        two.setMargins(dp(6), 0, 0, 0);
+        LinearLayout.LayoutParams one = new LinearLayout.LayoutParams(dp(90), dp(28));
+        one.setMargins(dp(4), 0, 0, 0);
+        LinearLayout.LayoutParams two = new LinearLayout.LayoutParams(dp(90), dp(28));
+        two.setMargins(dp(4), 0, 0, 0);
         row.addView(back, one);
         row.addView(defaults, two);
         return row;
@@ -370,29 +356,110 @@ class SettingsDialog extends Dialog {
         return t;
     }
 
+    // an ImGui button
     private TextView chip(String s, float sp) {
         TextView t = text(s, sp, TEXT);
         t.setGravity(Gravity.CENTER);
-        t.setBackground(chipBackground(false));
+        t.setBackground(box(BUTTON, false));
         t.setClickable(true);
         t.setFocusable(true);
-        t.setPadding(dp(8), dp(5), dp(8), dp(5));
+        t.setPadding(dp(6), dp(4), dp(6), dp(4));
         return t;
     }
 
-    private GradientDrawable chipBackground(boolean on) {
+    // square, filled, a one pixel border when asked
+    private static GradientDrawable box(int color, boolean border) {
         GradientDrawable d = new GradientDrawable();
-        d.setColor(on ? CHIP_ON : CHIP);
-        d.setCornerRadius(dp(6));
-        if (on) d.setStroke(dp(1), BORDER);
+        d.setColor(color);
+        if (border) d.setStroke(1, BORDER);
         return d;
     }
 
+    // ImGui's separator
     private View line() {
         View rule = new View(getContext());
-        rule.setBackgroundColor(0x59EBB85C);
-        rule.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
+        rule.setBackgroundColor(BORDER);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1);
+        lp.setMargins(0, dp(3), 0, dp(3));
+        rule.setLayoutParams(lp);
         return rule;
+    }
+
+    // ImGui's SliderInt: a flat frame, a narrow grab at the value, the value written across the middle. A finger
+    // anywhere on it takes the grab there, and the value is written once more when it lets go
+    private static class Slider extends View {
+        interface Listener {
+            void changed(int progress);
+            void released(int progress);
+        }
+
+        final int max;
+        int progress;
+        Listener listener;
+        private String text = "";
+        private boolean held;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final float grabW;
+
+        Slider(Context c, int max) {
+            super(c);
+            this.max = Math.max(max, 1);
+            float density = c.getResources().getDisplayMetrics().density;
+            grabW = 10 * density;
+            paint.setTextSize(13 * c.getResources().getDisplayMetrics().scaledDensity);
+            paint.setTextAlign(Paint.Align.CENTER);
+        }
+
+        void setProgress(int p) {
+            progress = Math.max(0, Math.min(p, max));
+            invalidate();
+        }
+
+        void setText(String s) {
+            text = s;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            float w = getWidth(), h = getHeight(), pad = 2;
+            paint.setColor(FRAME);
+            canvas.drawRect(0, 0, w, h, paint);
+            float x = pad + (w - 2 * pad - grabW) * progress / max;
+            paint.setColor(held ? GRAB_ON : GRAB);
+            canvas.drawRect(x, pad, x + grabW, h - pad, paint);
+            paint.setColor(TEXT);
+            canvas.drawText(text, w / 2, h / 2 - (paint.descent() + paint.ascent()) / 2, paint);
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent e) {
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    held = true;
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                    // fall through: the press moves the grab as a drag does
+                case MotionEvent.ACTION_MOVE: {
+                    float span = Math.max(getWidth() - grabW, 1);
+                    int p = Math.round((e.getX() - grabW / 2) / span * max);
+                    p = Math.max(0, Math.min(p, max));
+                    if (p != progress) {
+                        progress = p;
+                        if (listener != null) listener.changed(p);
+                    }
+                    invalidate();
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    held = false;
+                    invalidate();
+                    if (listener != null) listener.released(progress);
+                    return true;
+                default:
+                    return true;
+            }
+        }
     }
 
     private int dp(float value) {

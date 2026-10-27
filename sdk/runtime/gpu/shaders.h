@@ -19,6 +19,7 @@ struct TexInfo {
 enum : uint8_t {
     kTexWide = 4,    // an upscaled target shrunk by the pass: each tap averaged over console texels
     kTexTarget = 8,  // a render target, read where the console's pixel offset puts it (DrawConstants::rtshift)
+    kTexShift = 16,  // a pretransformed draw's stage: read half a console pixel up and left (DrawConstants::rtshift)
 };
 
 struct PixelKey {

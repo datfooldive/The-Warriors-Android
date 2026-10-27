@@ -229,12 +229,6 @@ const char* kVsEpilogue = R"(
     // of the far edges on D3D12's, which upscaled leaves the last host columns and rows undrawn
     // surf.w set: a point, which stays put since pulled out it would leave the target
     if (surf.w == 0 && abs(p.x - (surf.x - 0.5)) < 1e-3) p.x = surf.x;
-    // and screen space passes drawn from 0, moved the half pixel right and down with the rest of the pretransformed
-    // vertices, start half a console pixel in: upscaled, the first host column and row were never drawn over and
-    // kept an earlier frame (a cutscene's) at the left and top edges. Between the far edges' two lines, which
-    // QuadHlsl records the pull around, so a textured quad's coordinates are taken back to where they were
-    if (surf.w == 0 && abs(p.x - 0.5) < 1e-3) p.x = 0;
-    if (surf.w == 0 && abs(p.y - 0.5) < 1e-3) p.y = 0;
     if (surf.w == 0 && abs(p.y - (surf.y - 0.5)) < 1e-3) p.y = surf.y;
     q.x = p.x * 2 / surf.x - 1;
     q.y = 1 - p.y * 2 / surf.y;
@@ -395,6 +389,9 @@ std::string TexUv(const TexInfo& t, int i, const std::string& uv) {
     std::string n = "(" + uv + ")";
     if (t.rect) n += F(" / texsize[%d].xy", i);
     n += F(" + texsize[%d].zw", i);
+    // a pretransformed draw lies where the title put it, its reads moved to where the console's pixel centres take them
+    if ((t.flags & kTexShift) && !(t.flags & kTexTarget))
+        n = "(" + n + F(" + rtshift[%d] * (ddx(", i) + n + ") + ddy(" + n + ")))";
     // a 2D quad's texels alone (UvClamp): drawn larger than the console does, a quad's bilinear reads at its far
     // edges would take in the next cell of an atlas, under and beside every glyph of the font
     if (i == 0 && !t.rect && !(t.flags & kTexTarget)) n = "clamp(" + n + ", uvclamp.xy, uvclamp.zw)";
@@ -780,10 +777,11 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     if (pretransformed) {
         s += "    float4 rhw = " + v(0, "float4(0,0,0,1)") + ";\n";
         s += "    float w = rhw.w == 0 ? 1 : 1 / rhw.w;\n";
-        // the console samples a screen space position on its pixel centre, the host half a pixel up-left of it: moved
-        // half a pixel right and down, a quad drawn texel for texel samples texel centres, not the row or column past
-        // its far edge (a font atlas's next glyph), and render target reads (RenderTargetShift) line up
-        s += "    oPos = float4(rhw.xy + 0.5, rhw.z / surf.z, w);\n";
+        // the console samples a screen space position on its pixel centre, the host half a pixel up-left of it. The
+        // reads are moved for that (kTexShift), not the geometry: moved half a pixel right and down, a quad's edges
+        // fell between the host pixels of an upscaled target, and a full screen one left a line of what was under it
+        // along the target's left and top edges (a cutscene's opening shot)
+        s += "    oPos = float4(rhw.xy, rhw.z / surf.z, w);\n";
     } else {
         s += "    float4 ip = float4(" + v(0, "float4(0,0,0,1)") + ".xyz, 1);\n";
         s += "    float4 cp = mul(ip, wvp);\n";

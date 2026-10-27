@@ -979,6 +979,8 @@ private:
     struct Frame {
         VkCommandPool pool = VK_NULL_HANDLE;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
+        VkCommandBuffer pre = VK_NULL_HANDLE;  // a new texture's first upload, submitted ahead of cmd
+        bool pre_open = false;
         BufferRef upload;
         uint64_t used = 0;
         uint64_t fence = 0;
@@ -1110,6 +1112,8 @@ private:
                             DrawTextures& stages);
     bool CreateTexture(Tex& tx, const TextureDesc& d, const FormatInfo& fi, uint64_t key);
     void UploadTexture(Tex& tx, const TextureDesc& d, const uint8_t* p, const uint32_t* colours);
+    void UploadNewTexture(Tex& tx, const TextureDesc& d, const uint8_t* p, const uint32_t* colours);
+    uint32_t SubmitBuffers(VkCommandBuffer (&out)[2]);
     void GenerateMips(Image& img);
     void UploadTextureLevel(Tex& tx, const TextureDesc& d, uint32_t f, uint32_t l, const std::vector<uint8_t>& px,
                             uint32_t pitch);
@@ -1135,7 +1139,7 @@ private:
     void StageSamplers(const State& s, const DrawTextures& stages, bool clamp, VkSampler (&out)[4]);
     bool Linear(VkFormat f);
     std::unordered_map<VkFormat, bool> linear_;
-    void SetViewportScissor(const State& s, uint32_t gw);
+    void SetViewportScissor(const State& s, uint32_t gw, bool pretransformed);
     void SetBlendFactorStencilRef(const State& s, const PsoKey& k);
     void DrawGeometry(const Assembled& a);
     // shaders by source hash: Compile returns the module and sets hash
@@ -1548,13 +1552,10 @@ bool VulkanBackend::PickDevice() {
     if (props_.vendorID != kVendorArm) {
         dynamic_state_ = ext_dynamic_state_ = maintenance5_ = custom_border_ = false;
     }
-    // Mali's r38 driver (Mali-G57 on a Helio G99, driver 09801000) draws with the dynamic topology and strides
-    // wrong: triangles stretch to one point and texture coordinates smear, while a newer driver on the same chip draws
-    // right. Its driver version is rN pM as major N, minor M
-    constexpr uint32_t kMaliDynamicStateFrom = 40;
-    if (props_.vendorID == kVendorArm && VK_API_VERSION_MAJOR(props_.driverVersion) < kMaliDynamicStateFrom) {
-        dynamic_state_ = ext_dynamic_state_ = false;
-    }
+    // Mali-G57 (Helio G99) draws with the dynamic topology and strides wrong on r38 (driver 09801000) and r54
+    // (0D801000) alike: triangles stretch to one point, the world's texture coordinates smear into streaks and flat
+    // colour while the player's model draws right. Strides and topology go in the pipelines, as on the other GPUs
+    if (props_.vendorID == kVendorArm) dynamic_state_ = ext_dynamic_state_ = false;
     LOGR("GPU: %s (Vulkan %u.%u.%u, driver %08X)", props_.deviceName, VK_API_VERSION_MAJOR(props_.apiVersion),
          VK_API_VERSION_MINOR(props_.apiVersion), VK_API_VERSION_PATCH(props_.apiVersion), props_.driverVersion);
     // reported, not warned: release logs drop warnings and these are what a bug report needs
@@ -1820,6 +1821,7 @@ void VulkanBackend::CreateFrames() {
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         ai.commandBufferCount = 1;
         VK_CHECK(vkAllocateCommandBuffers(dev_, &ai, &f.cmd));
+        VK_CHECK(vkAllocateCommandBuffers(dev_, &ai, &f.pre));
         f.upload = CreateBuffer(kUploadSize,
                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -2361,8 +2363,9 @@ void VulkanBackend::Submit(bool wait) {
     ts.signalSemaphoreValueCount = 1;
     ts.pSignalSemaphoreValues = &value;
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO, timeline_ ? &ts : nullptr};
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cl_;
+    VkCommandBuffer cmds[2];
+    si.commandBufferCount = SubmitBuffers(cmds);
+    si.pCommandBuffers = cmds;
     si.signalSemaphoreCount = timeline_ ? 1 : 0;
     si.pSignalSemaphores = &fence_;
     if (timeline_) {
@@ -2388,6 +2391,41 @@ void VulkanBackend::Submit(bool wait) {
 }
 
 void VulkanBackend::Flush() { Submit(true); }
+
+// the frame's command buffers in submission order: the new textures' uploads, then the frame
+uint32_t VulkanBackend::SubmitBuffers(VkCommandBuffer (&out)[2]) {
+    Frame& f = CurrentFrame();
+    uint32_t n = 0;
+    if (f.pre_open) {
+        vkEndCommandBuffer(f.pre);
+        f.pre_open = false;
+        out[n++] = f.pre;
+    }
+    out[n++] = cl_;
+    return n;
+}
+
+// A texture made this frame has its first upload recorded ahead of the frame: in the frame it would end the
+// rendering under way, and a tiler stores the whole target and loads it back for each one. A mission's first frame
+// brings hundreds (441 in The Warriors' first cutscene), which kept the GPU on that frame for most of a second, the
+// last picture of the loading screen's fade left up meanwhile. Nothing in the frame has read the texture yet, so
+// uploading it first changes no draw's input
+void VulkanBackend::UploadNewTexture(Tex& tx, const TextureDesc& d, const uint8_t* p, const uint32_t* colours) {
+    Frame& f = CurrentFrame();
+    if (!f.pre_open) {
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(f.pre, &bi);
+        f.pre_open = true;
+    }
+    VkCommandBuffer frame_cl = cl_;
+    bool was_rendering = rendering_;
+    cl_ = f.pre;
+    rendering_ = false;
+    UploadTexture(tx, d, p, colours);
+    cl_ = frame_cl;
+    rendering_ = was_rendering;
+}
 
 void VulkanBackend::WaitFence(uint64_t value) {
     if (!timeline_) {
@@ -3420,7 +3458,8 @@ Image* VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureD
             g_perf.texups++;
             g_perf.texup_bytes += total;
             tx.sig = sig;
-            UploadTexture(tx, d, p, palette.va ? palette.colours : nullptr);
+            if (same) UploadTexture(tx, d, p, palette.va ? palette.colours : nullptr);
+            else UploadNewTexture(tx, d, p, palette.va ? palette.colours : nullptr);
         }
     }
     stages.levels[stage] = tx.levels;
@@ -3807,8 +3846,9 @@ void VulkanBackend::FillTexelConstants(int i, const TextureDesc& d, const DrawTe
 
 // A pretransformed quad's stage 0 reads held to its own texels. The console samples a quad drawn texel for texel
 // from its first texel centre to its last, one texel short of the far coordinates; drawn larger here, the bilinear
-// reads past that take in the neighbouring cell of an atlas (the font's next row and column). Any other draw is left
-// alone.
+// reads past that take in the neighbouring cell of an atlas (the font's next row and column). Across, the reads go to
+// the centre of the last texel the far u reaches instead, still none of the next cell: a texel short cut the last
+// column, the outline, off the words. Any other draw is left alone.
 void UvClamp(const State& s, const DrawTextures& stages, DrawConstants& c) {
     constexpr float kOpen = 1e30f;
     c.uvclamp[0] = c.uvclamp[1] = -kOpen;
@@ -3818,9 +3858,10 @@ void UvClamp(const State& s, const DrawTextures& stages, DrawConstants& c) {
         !Describe(s.textures[0], d) || !d.width || !d.height)
         return;
     const auto& q = s.quad_uv;
+    const float w = float(d.width);
     c.uvclamp[0] = q[0];
     c.uvclamp[1] = q[1];
-    c.uvclamp[2] = std::max(q[0], q[2] - 1.0f / float(d.width));
+    c.uvclamp[2] = std::max(q[0], (std::ceil(q[2] * w - 1e-3f) - 0.5f) / w);
     c.uvclamp[3] = std::max(q[1], q[3] - 1.0f / float(d.height));
 }
 
@@ -3830,6 +3871,8 @@ void VulkanBackend::FillTextureConstants(const State& s, const DrawShaders& sh, 
         TextureDesc d;
         if (s.textures[size_t(i)] && Describe(s.textures[size_t(i)], d)) FillTexelConstants(i, d, stages, c);
         if (stages.rt[i]) c.rtshift[i] = RenderTargetShift(s, sh);
+        // a pretransformed draw's reads half a console pixel up and left, a target's on top of its own shift
+        if (stages.info[i].flags & kTexShift) c.rtshift[i] += -0.5f * TargetScale();
         const auto& t = s.tss[size_t(i)];
         c.bump[i][0] = Bits(t[kTssBumpEnvMat00]);
         c.bump[i][1] = Bits(t[kTssBumpEnvMat01]);
@@ -4080,21 +4123,27 @@ void VulkanBackend::SetTextureViewsAndSamplers(const State& s, const Assembled& 
     StageSamplers(s, stages, AnyStageWraps(s) && UnitTexcoords(a), b.samplers);
 }
 
-// viewport covers the target, the guest viewport is in the shader; scissor clips to it
-void VulkanBackend::SetViewportScissor(const State& s, uint32_t gw) {
+// viewport covers the target, the guest viewport is in the shader; scissor clips to it. The console's viewport only
+// places transformed vertices, so XYZRHW draws are left whole: a cutscene's black letterbox drawn with the viewport
+// still on the picture between the bars was cut to it, and the picture showed through at the screen's edge
+void VulkanBackend::SetViewportScissor(const State& s, uint32_t gw, bool pretransformed) {
     uint32_t W = bound_rt_ ? bound_rt_->w : bound_ds_->w;
     uint32_t H = bound_rt_ ? bound_rt_->h : bound_ds_->h;
     SetViewport(0, 0, float(W), float(H));
     float sc = float(W) / float(gw);
-    int32_t x0 = HostEdge(int32_t(s.viewport.x), sc, W, false);
-    int32_t y0 = HostEdge(int32_t(s.viewport.y), sc, H, false);
-    int32_t x1 = HostEdge(int32_t(s.viewport.x + s.viewport.w), sc, W, true);
-    int32_t y1 = HostEdge(int32_t(s.viewport.y + s.viewport.h), sc, H, true);
+    int32_t x0 = 0, y0 = 0, x1 = int32_t(W), y1 = int32_t(H);
+    if (!pretransformed) {
+        x0 = HostEdge(int32_t(s.viewport.x), sc, W, false);
+        y0 = HostEdge(int32_t(s.viewport.y), sc, H, false);
+        x1 = HostEdge(int32_t(s.viewport.x + s.viewport.w), sc, W, true);
+        y1 = HostEdge(int32_t(s.viewport.y + s.viewport.h), sc, H, true);
+    }
+    // a scissor rect's far corner is its last pixel: taken as the edge past it, the last row and column went undrawn
     if (s.scissor_count) {
         x0 = std::max(x0, HostEdge(int32_t(s.scissors[0]), sc, W, false));
         y0 = std::max(y0, HostEdge(int32_t(s.scissors[1]), sc, H, false));
-        x1 = std::min(x1, HostEdge(int32_t(s.scissors[2]), sc, W, true));
-        y1 = std::min(y1, HostEdge(int32_t(s.scissors[3]), sc, H, true));
+        x1 = std::min(x1, HostEdge(int32_t(s.scissors[2]) + 1, sc, W, true));
+        y1 = std::min(y1, HostEdge(int32_t(s.scissors[3]) + 1, sc, H, true));
     }
     SetScissor({x0, y0, x1, y1});
 }
@@ -4181,6 +4230,9 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     // stage textures, then the pixel shader made for them
     DrawTextures stages;
     if (!BindStageTexturesAndTargets(s, stages)) return;
+    if (a.pretransformed)
+        for (auto& t : stages.info)
+            if (t.kind) t.flags |= kTexShift;
     PixelKey pk = MakePixelKey(s, stages.info);
     sh.near_depth = NearDepth(s);
     sh.pkey = Hash(&pk, sizeof(pk)) ^ (sh.near_depth ? kNearDepthSalt : 0);
@@ -4210,7 +4262,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     // texture views and samplers, viewport and scissor, blend factor and stencil reference
     SetTextureViewsAndSamplers(s, a, stages, b);
     PushBindings(b);
-    SetViewportScissor(s, size.w);
+    SetViewportScissor(s, size.w, a.pretransformed);
     SetBlendFactorStencilRef(s, k);
 
     // geometry
@@ -5141,8 +5193,9 @@ void VulkanBackend::SubmitPresent(bool acquired, uint32_t bi) {
     si.waitSemaphoreCount = acquired ? 1 : 0;
     si.pWaitSemaphores = &CurrentFrame().acquired;
     si.pWaitDstStageMask = &stage;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cl_;
+    VkCommandBuffer cmds[2];
+    si.commandBufferCount = SubmitBuffers(cmds);
+    si.pCommandBuffers = cmds;
     si.signalSemaphoreCount = (acquired ? 2 : 1) - first;
     si.pSignalSemaphores = signal + first;
     if (timeline_) {
