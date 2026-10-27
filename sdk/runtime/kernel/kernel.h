@@ -139,6 +139,15 @@ int32_t ReleaseMutant(Object& o, uint32_t& status);
 int64_t Now100ns();                           // system time, 100 ns since 1601
 int64_t ToDeadline(int64_t due_100ns);        // relative or absolute to a steady clock deadline in ns
 void QueueDpc(uint32_t dpc, uint32_t arg1, uint32_t arg2);
+// one processor: a thread at DISPATCH_LEVEL or above shuts out every other such thread and every DPC
+uint8_t SetIrql(uint8_t irql);  // returns the previous level
+struct AtDispatchLevel {
+    uint8_t old;
+    AtDispatchLevel() : old(SetIrql(2)) {}
+    ~AtDispatchLevel() { SetIrql(old); }
+    AtDispatchLevel(const AtDispatchLevel&) = delete;
+    AtDispatchLevel& operator=(const AtDispatchLevel&) = delete;
+};
 struct Thread;
 // apc_routine runs on apc_thread with (apc_context, due low, due high) each time the timer fires
 void SetTimer(ObjectRef timer, int64_t due, int32_t period_ms, uint32_t dpc, std::shared_ptr<Thread> apc_thread = nullptr,

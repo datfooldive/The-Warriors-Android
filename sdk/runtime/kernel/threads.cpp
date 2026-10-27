@@ -178,6 +178,7 @@ void StartThread(ThreadRef t) {
         else
             code = CallGuest(ctx, si.start_routine, {si.start_context});
         LOGI("thread %X returned %08X", t->id, code);
+        SetIrql(0);
         MarkExited(*t, code);
         Unregister(t.get());
         t_current.reset();
@@ -203,6 +204,7 @@ void StartHostThread(const char* name, std::function<void(X86Context&)> fn) {
 void ExitThread(uint32_t code) {
     Thread* t = Current();
     if (t) {
+        SetIrql(0);  // never leave the dispatch lock held by a thread that is gone
         LOGI("thread %X exits with %08X", t->id, code);
         MarkExited(*t, code);
         Unregister(t);

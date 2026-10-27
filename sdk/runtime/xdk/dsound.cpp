@@ -704,6 +704,9 @@ void Start() {
                 done.assign(g_done.begin(), g_done.end());
                 g_done.clear();
             }
+            if (done.empty()) continue;
+            // the title's own code may be mid-update at raised irql on another thread
+            AtDispatchLevel dispatch;
             Run(ctx, done);
         }
     });

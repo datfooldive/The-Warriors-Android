@@ -58,6 +58,10 @@ void PutAnsi(uint32_t str, const char* text) {
 
 uint8_t& Irql() { return G<uint8_t>(Current()->kpcr + 0x24); }
 
+// held by whichever thread is at DISPATCH_LEVEL, as the console's single CPU would be
+std::mutex g_dispatch_level;
+thread_local bool t_at_dispatch = false;
+
 int64_t TimeoutArg(uint32_t ptr) { return ptr ? int64_t(R64(ptr)) : INT64_MAX; }
 
 // KSYSTEM_TIME: readers retry until High1Time equals High2Time
@@ -189,29 +193,31 @@ KERNEL_EXPORT(122, KeLeaveCriticalRegion, 0) { return 0; }
 
 // irql, time
 
-KERNEL_FASTCALL(160, KfRaiseIrql) {
+uint8_t SetIrql(uint8_t irql) {
+    bool dispatch = irql >= 2;
+    if (dispatch && !t_at_dispatch) {
+        g_dispatch_level.lock();
+        t_at_dispatch = true;
+    } else if (!dispatch && t_at_dispatch) {
+        t_at_dispatch = false;
+        g_dispatch_level.unlock();
+    }
     uint8_t old = Irql();
-    Irql() = uint8_t(ctx.ecx);
+    Irql() = irql;
     return old;
 }
 
+KERNEL_FASTCALL(160, KfRaiseIrql) { return SetIrql(uint8_t(ctx.ecx)); }
+
 KERNEL_FASTCALL(161, KfLowerIrql) {
-    Irql() = uint8_t(ctx.ecx);
+    SetIrql(uint8_t(ctx.ecx));
     return 0;
 }
 
-KERNEL_EXPORT(129, KeRaiseIrqlToDpcLevel, 0) {
-    uint8_t old = Irql();
-    Irql() = 2;
-    return old;
-}
+KERNEL_EXPORT(129, KeRaiseIrqlToDpcLevel, 0) { return SetIrql(2); }
 
 // one processor: synch level is dispatch level
-KERNEL_EXPORT(130, KeRaiseIrqlToSynchLevel, 0) {
-    uint8_t old = Irql();
-    Irql() = 2;
-    return old;
-}
+KERNEL_EXPORT(130, KeRaiseIrqlToSynchLevel, 0) { return SetIrql(2); }
 
 KERNEL_EXPORT(103, KeGetCurrentIrql, 0) { return Irql(); }
 KERNEL_EXPORT(121, KeIsExecutingDpc, 0) { return 0; }
